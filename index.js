@@ -34,9 +34,10 @@ const recordCounter = through2.obj((row, enc, cb) => {
 });
 
 /**
- * @param {Object} filter
+ * @param {Object}        filter
  * @param {String}        filter.field
  * @param {Number|String} filter.name
+ * @returns {DestroyableTransform}
  */
 const recordFilter = (filter) => {
   let firstLine = true;
@@ -56,6 +57,7 @@ const recordFilter = (filter) => {
 /**
  * @param {String}      outFileName
  * @param {Number|null} maxBatchLen
+ * @returns {DestroyableTransform}
  */
 const batchedWriter = (outFileName, maxBatchLen = null) => {
   if (!maxBatchLen) {
@@ -84,19 +86,46 @@ const batchedWriter = (outFileName, maxBatchLen = null) => {
   });
 };
 
-fs.access(csvFile).then(() => {
-  const outputStream = outFile ? batchedWriter(outFile, outFileMaxEntries) : through2((c, e, cb) => { cb(null, c); });
-  fs.createReadStream(csvFile)
-    .pipe(csv())
-    .pipe(recordCounter)
-    .pipe(recordFilter(responseFilter))
-    .pipe(outputStream)
-    .on('finish', () => {
-      console.info(`Processed ${processedRowCount} entries`);
-      console.info(`${emails.size} unique email addresses indicated as Suppliers`);
-      process.exit(0);
-    });
-}).catch(() => {
-  console.error(`File '${csvFile}' does not exist`);
-  process.exit(1);
-});
+/**
+ * @typedef {Object}       parseOptions
+ * @property {String}      parseOptions.outFile
+ * @property {Number|null} parseOptions.batchLen
+ *
+ * @typedef {Object}       outputInfo
+ * @property {Number}      outputInfo.total
+ * @property {Number}      outputInfo.filtered
+ *
+ * @param {String}       input
+ * @param {parseOptions} opts
+ * @returns {Promise.<outputInfo>}
+ */
+const parse = (input, opts = {}) => {
+  const runtimeOptions = Object.assign({}, {
+    outFile: 'out.txt',
+    batchLen: null,
+  }, opts);
+  const outputStream = runtimeOptions.outFile ?
+    batchedWriter(runtimeOptions.outFile, runtimeOptions.batchLen) : through2((c, e, cb) => { cb(null, c); });
+  return new Promise((resolve, reject) => {
+    fs.access(input).then(() => {
+      fs.createReadStream(csvFile)
+        .pipe(csv())
+        .pipe(recordCounter)
+        .pipe(recordFilter(responseFilter))
+        .pipe(outputStream)
+        .on('finish', () => resolve({ total: processedRowCount, filtered: emails.size }));
+    }).catch(() => reject(new Error(`File '${input}' does not exist`)));
+  });
+};
+
+(async () => {
+  try {
+    const { total, filtered } = await parse(csvFile, { outfile: outFile, batchLen: outFileMaxEntries });
+    console.info(`Processed a total of ${total} entries`);
+    console.info(`${filtered} unique email addresses indicated as Suppliers`);
+    process.exit(0);
+  } catch (e) {
+    console.error(e);
+    process.exit(1);
+  }
+})();
